@@ -51,11 +51,92 @@ export class SoundEngine {
   }
 
   // Catching an ember: a warm chime that climbs the scale with the combo.
+  // Once the streak is long the chime opens into a quick three-note
+  // arpeggio — the sound of a run going well.
   catchChime(combo) {
     const step = SCALE[Math.min(combo, SCALE.length - 1)];
     const base = 392 * Math.pow(2, step / 12);
+    if (combo >= 6 && combo % 3 === 0) {
+      [0, 1, 2].forEach((i) => {
+        const s = SCALE[Math.min(combo + i, SCALE.length - 1)];
+        this.tone(392 * Math.pow(2, s / 12), 0.3, { type: 'triangle', vol: 0.2, delay: i * 0.055 });
+      });
+      this.tone(base * 2, 0.22, { type: 'sine', vol: 0.07, delay: 0.11 });
+      return;
+    }
     this.tone(base, 0.28, { type: 'triangle', vol: 0.22 });
     this.tone(base * 2, 0.18, { type: 'sine', vol: 0.08 });
+  }
+
+  // A streak milestone: four notes sprinting up the scale.
+  milestone() {
+    [7, 10, 12, 15].forEach((s, i) =>
+      this.tone(392 * Math.pow(2, s / 12), 0.32, { type: 'triangle', vol: 0.16, delay: i * 0.05 }));
+  }
+
+  // Catching a storm wisp: a bright zap that bends upward, then sparkles.
+  wispCatch() {
+    this.tone(1180, 0.22, { type: 'sawtooth', vol: 0.05, slideTo: 2360 });
+    this.tone(2093, 0.3, { type: 'sine', vol: 0.1, delay: 0.05 });
+    this.tone(2637, 0.34, { type: 'sine', vol: 0.07, delay: 0.11 });
+  }
+
+  // A wisp bursting on the ridge: a harsh little buzz and a noise snap.
+  wispZap() {
+    this.tone(210, 0.2, { type: 'square', vol: 0.14, slideTo: 55 });
+    if (!this.ctx || this.muted) return;
+    const dur = 0.09;
+    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 1600;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.16;
+    src.connect(filter).connect(gain).connect(this.master);
+    src.start();
+  }
+
+  // The dying flame's heartbeat: two low thumps, the second softer.
+  heartbeat() {
+    this.tone(56, 0.16, { type: 'sine', vol: 0.5 });
+    this.tone(50, 0.13, { type: 'sine', vol: 0.32, delay: 0.21 });
+  }
+
+  // Surviving a night: a four-note rise, then a shimmer on top.
+  nightClear() {
+    [523, 659, 784, 1047].forEach((f, i) =>
+      this.tone(f, 0.55, { type: 'triangle', vol: 0.13, delay: i * 0.09 }));
+    this.tone(1568, 0.7, { type: 'sine', vol: 0.05, delay: 0.38 });
+  }
+
+  // The gale arriving: a breath of noise swelling through a rising band.
+  galeGust() {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx;
+    const dur = 1.4;
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.Q.value = 1.1;
+    const t0 = ctx.currentTime;
+    band.frequency.setValueAtTime(280, t0);
+    band.frequency.exponentialRampToValueAtTime(950, t0 + dur * 0.7);
+    band.frequency.exponentialRampToValueAtTime(420, t0 + dur);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(0.12, t0 + dur * 0.45);
+    gain.gain.linearRampToValueAtTime(0, t0 + dur);
+    src.connect(band).connect(gain).connect(this.master);
+    src.start(t0);
+    src.stop(t0 + dur + 0.05);
   }
 
   // Catching ash: a dull, falling thud plus a breath of noise.

@@ -42,6 +42,23 @@ export const UPGRADES = [
       game.keeper.drainPerSec *= 0.94;
     },
   },
+  {
+    id: 'stormglass',
+    name: 'Stormglass Charm',
+    desc: 'A violet charm: wisps kindle the flame far longer, and a burst wisp feeds it +5 light instead of zapping.',
+    icon: '✧',
+    apply(game) {
+      game.kindledFactor = 1.8;
+      game.wispWard = true;
+    },
+  },
+  {
+    id: 'dawntithe',
+    name: 'Dawn Tithe',
+    desc: 'The dawn pays double: light left at night’s end is worth twice the score.',
+    icon: '☼',
+    apply(game) { game.dawnFactor = 2; },
+  },
 ];
 
 // Two distinct upgrades, chosen at random.

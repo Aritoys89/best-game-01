@@ -4,7 +4,9 @@
 // and rising "+N" score texts.
 
 export class Particles {
-  constructor() { this.bits = []; }
+  constructor() { this.bits = []; this.rings = []; }
+
+  clear() { this.bits = []; this.rings = []; }
 
   burst(x, y, color, count = 14, speed = 130) {
     for (let i = 0; i < count; i++) {
@@ -18,8 +20,43 @@ export class Particles {
         age: 0,
         size: 1.4 + Math.random() * 2.4,
         color,
+        grav: 190,
       });
     }
+  }
+
+  // An expanding ring — the punctuation mark for the big moments: a wisp
+  // caught, a streak milestone, a zap on the ridge.
+  ring(x, y, color, maxR = 56) {
+    this.rings.push({ x, y, color, maxR, age: 0, life: 0.45 });
+  }
+
+  // One spark shed behind the keeper as she runs — her trail of light.
+  trail(x, y, vx) {
+    this.bits.push({
+      x, y,
+      vx: -vx * 0.25 + (Math.random() - 0.5) * 22,
+      vy: -18 - Math.random() * 26,
+      life: 0.4 + Math.random() * 0.25,
+      age: 0,
+      size: 1.1 + Math.random() * 1.4,
+      color: Math.random() < 0.3 ? '#ffe9a8' : '#ffab4a',
+      grav: -30, // trail sparks drift up like real sparks off a flame
+    });
+  }
+
+  // A gale streak: a fast, nearly flat spark the wind carries across.
+  streak(x, y, vx) {
+    this.bits.push({
+      x, y,
+      vx,
+      vy: (Math.random() - 0.5) * 30,
+      life: 0.5 + Math.random() * 0.3,
+      age: 0,
+      size: 1 + Math.random() * 1.2,
+      color: 'rgba(190, 205, 235, 0.8)',
+      grav: 6,
+    });
   }
 
   update(dt) {
@@ -27,9 +64,11 @@ export class Particles {
       b.age += dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      b.vy += 190 * dt; // a little gravity, like real sparks settling
+      b.vy += b.grav * dt; // a little gravity, like real sparks settling
     }
     this.bits = this.bits.filter(b => b.age < b.life);
+    for (const r of this.rings) r.age += dt;
+    this.rings = this.rings.filter(r => r.age < r.life);
   }
 
   draw(ctx) {
@@ -41,12 +80,23 @@ export class Particles {
       ctx.arc(b.x, b.y, b.size * t + 0.4, 0, Math.PI * 2);
       ctx.fill();
     }
+    for (const r of this.rings) {
+      const t = r.age / r.life;
+      ctx.globalAlpha = (1 - t) * 0.8;
+      ctx.strokeStyle = r.color;
+      ctx.lineWidth = 2.2 * (1 - t) + 0.4;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, 6 + (r.maxR - 6) * t, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.globalAlpha = 1;
   }
 }
 
 export class Floaters {
   constructor() { this.texts = []; }
+
+  clear() { this.texts = []; }
 
   add(x, y, text, color = '#ffd98a') {
     this.texts.push({ x, y, text, color, age: 0, life: 0.95 });
@@ -118,17 +168,26 @@ export function drawHUD(ctx, game) {
   ctx.fillStyle = 'rgba(255,255,255,0.14)';
   ctx.fillRect(barX, barY, barW, 15);
   const lightFrac = Math.max(0, keeper.light / keeper.maxLight);
+  // Under a quarter the bar throbs with the heartbeat main.js sounds.
+  ctx.globalAlpha = lightFrac < 0.26 ? 0.62 + keeper.heartPulse * 0.38 : 1;
   ctx.fillStyle = lightFrac > 0.5 ? '#ffcf6e' : lightFrac > 0.25 ? '#ff9d45' : '#ff5d4d';
   ctx.fillRect(barX, barY, barW * lightFrac, 15);
+  ctx.globalAlpha = 1;
   ctx.strokeStyle = 'rgba(255, 233, 187, 0.5)';
   ctx.lineWidth = 1;
   ctx.strokeRect(barX, barY, barW, 15);
 
-  // Frost slow-time notice.
-  if (game.slowLeft > 0) {
-    ctx.textAlign = 'center';
-    ctx.font = 'italic 15px Georgia, serif';
-    ctx.fillStyle = 'rgba(190, 230, 255, 0.9)';
-    ctx.fillText('❄ time drifts slow ❄', W / 2, 68);
-  }
+  // Event notices, stacked under the night name so several can show at
+  // once without colliding: the gale first, then frost's slow time, then
+  // the kindled flame.
+  const notices = [];
+  if (game.galeLeft > 0) notices.push(['≋ THE GALE ≋', 'rgba(200, 216, 245, 0.95)']);
+  if (game.slowLeft > 0) notices.push(['❄ time drifts slow ❄', 'rgba(190, 230, 255, 0.9)']);
+  if (game.kindledLeft > 0) notices.push(['✦ KINDLED — the flame drinks deep ✦', 'rgba(216, 180, 255, 0.95)']);
+  ctx.textAlign = 'center';
+  ctx.font = 'italic 15px Georgia, serif';
+  notices.forEach(([text, color], i) => {
+    ctx.fillStyle = color;
+    ctx.fillText(text, W / 2, 68 + i * 22);
+  });
 }

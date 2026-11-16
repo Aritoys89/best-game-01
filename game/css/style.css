@@ -1,0 +1,59 @@
+/* EMBERFALL — page styling. The game itself is drawn on the canvas; this
+   sheet only frames it and reacts to the screen the game is on (the game
+   keeps document.body.dataset.screen in sync with its state machine). */
+
+:root {
+  --ink: #0b1020;
+  --ember: #ffb84d;
+  --paper: #e8e2d0;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: radial-gradient(120% 90% at 50% 0%, #131c38 0%, var(--ink) 60%, #05070f 100%);
+  color: var(--paper);
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+#stage {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 18px 10px;
+}
+
+canvas#game {
+  width: min(96vw, 1067px);
+  height: auto;
+  aspect-ratio: 960 / 600;
+  display: block;
+  border: 1px solid rgba(255, 184, 77, 0.35);
+  border-radius: 10px;
+  background: #070b18;
+  box-shadow: 0 0 42px rgba(255, 150, 40, 0.14), 0 18px 50px rgba(0, 0, 0, 0.6);
+  cursor: crosshair;
+}
+
+/* The frame breathes with the game: warm while playing, cold at the end. */
+body[data-screen="playing"] canvas#game { border-color: rgba(255, 184, 77, 0.55); }
+body[data-screen="choice"]  canvas#game { cursor: pointer; }
+body[data-screen="gameover"] canvas#game {
+  border-color: rgba(120, 140, 190, 0.4);
+  box-shadow: 0 0 30px rgba(80, 110, 200, 0.10), 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+body[data-screen="paused"] canvas#game { filter: saturate(0.6) brightness(0.85); }
+
+#hint {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: rgba(232, 226, 208, 0.55);
+  text-align: center;
+}

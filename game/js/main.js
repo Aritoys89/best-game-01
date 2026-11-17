@@ -17,10 +17,15 @@
 // Every fifth night the Ash Golem crosses the valley: it swallows the
 // embers that fall into it, its shadow drinks the light, and its stomps
 // shake bonus embers loose — survive it and the dawn offers a rare
-// blessing. Moonwater sometimes falls too, a droplet that pours light
-// back into the lantern but spends the streak it lands on. And every run
-// earns Keeper's Marks, spent between runs in the Keeper's Cache on
-// blessings that never fade.
+// blessing. Every tenth night is the Longest Night: the golem comes
+// crowned in cinders, faster and angrier, and the Ash Crow circles with
+// it. The crow is the valley's other hunter: it drops cinders aimed at
+// the keeper, and a cinder is the one thing in the sky she must NOT
+// catch — let it strike the ridge and it cracks open into embers.
+// Moonwater sometimes falls too, a droplet that pours light back into
+// the lantern but spends the streak it lands on. And every run earns
+// Keeper's Marks, spent between runs in the Keeper's Cache on blessings
+// that never fade.
 
 import { Keeper } from './keeper.js';
 import { FallingField, KIND } from './falling.js';
@@ -29,12 +34,14 @@ import { SoundEngine } from './audio.js';
 import { Particles, Floaters, drawHUD } from './hud.js';
 import { Background } from './render.js';
 import { Golem } from './golem.js';
+import { AshCrow } from './crows.js';
 import { CACHE_ITEMS, loadMeta, saveMeta, buyItem, priceFor, ownedLevel, marksEarnedForRun, applyMeta } from './meta.js';
 
 const W = 960;
 const H = 600;
 const BEST_KEY = 'emberfall-best';
 const BOSS_BONUS = 150;   // score for surviving a golem night
+const CLIMAX_BONUS = 300; // score for surviving the Longest Night
 const SHADOW_DRAIN = 1.7; // extra light per second inside the golem's shadow
 
 // Every night has a name, and the name says what kind of night it is.
@@ -47,6 +54,9 @@ const NIGHT_NAMES = [
 const GOLEM_NAMES = ['The Ash Golem', 'The Ash Golem Returns', 'The Ash Golem, Unbowed'];
 
 function nightTitle(night) {
+  if (night % 10 === 0) {
+    return { name: 'The Ash Golem, Crowned in Cinders', sub: 'The Longest Night — everything the dark has, at once.' };
+  }
   if (night % 5 === 0) {
     const name = GOLEM_NAMES[Math.floor(night / 5 - 1) % GOLEM_NAMES.length];
     return { name, sub: 'It drinks the falling light. Keep out of its shadow.' };
@@ -64,6 +74,7 @@ class Game {
     this.keeper = new Keeper(W, H);
     this.field = new FallingField(W, H);
     this.golem = new Golem(W, H);
+    this.crow = new AshCrow(W, H);
     this.background = new Background(W, H);
     this.particles = new Particles();
     this.floaters = new Floaters();
@@ -94,8 +105,12 @@ class Game {
     this.combo = 0;
     this.multiplier = 1;
     this.emberBonus = 0;      // from Brighter Core upgrades
+    this.emberLightBonus = 0; // from Twin Flame: extra light per ember
+    this.fountainEvery = 9;   // streak length that bursts a fountain (Twin Flame: 7)
     this.magnetRadius = 0;    // from Ember Magnet upgrades
     this.shieldPerNight = false;
+    this.galeheart = false;   // Galeheart: the gale feeds instead of shoving
+    this.ashenPact = false;   // Ashen Pact: swallowed ash pays score
     this.taken = [];
     this.slowLeft = 0;
     // Storm wisps and the kindled flame they light.
@@ -112,16 +127,21 @@ class Game {
     this.galeDone = false;
     // Boss nights and the intro banner that names each night.
     this.bossThisNight = false;   // a golem is crossing (or crossed) tonight
+    this.climaxThisNight = false; // the Longest Night: crowned golem, crow too
     this.bossBonus = 0;           // what surviving it paid, shown at dawn
     this.bannerT = 0;             // seconds of night-name banner remaining
     this.bannerTitle = null;      // {name, sub} for the current night
     this.wasInShadow = false;     // edge trigger for the shadow warning
+    // The crow's visit, scheduled like the gale's.
+    this.crowAt = this.nightLength * 0.55; // seconds into the night it arrives
+    this.crowDone = false;        // it has come and gone (or never came)
     // Run tallies for the game-over screen, and small timers.
-    this.stats = { embers: 0, wisps: 0, ash: 0, fountains: 0, moon: 0, bestStreak: 0, swallowed: 0, stomps: 0 };
+    this.stats = { embers: 0, wisps: 0, ash: 0, fountains: 0, moon: 0, bestStreak: 0, swallowed: 0, stomps: 0, cinders: 0 };
     this.heartbeatT = 0;
     this.trailT = 0;
     this.keeper.reset();
     this.golem.reset();
+    this.crow.reset();
     applyMeta(this); // the Cache's permanent blessings ride on every run
     this.field.clear();
     this.particles.clear();
@@ -142,7 +162,10 @@ class Game {
   }
 
   // Set up the night that is about to begin: its gale, its name on the
-  // banner, and — every fifth night — the golem's crossing.
+  // banner, and — every fifth night — the golem's crossing. Every tenth
+  // night is the Longest Night: the golem comes crowned (faster, stomping
+  // oftener, its shadow deeper) and the crow is allowed to circle with
+  // it; on ordinary nights from the third on, the crow may visit alone.
   beginNight() {
     this.nightLeft = this.nightLength;
     this.galeAt = this.nightLength * (0.35 + Math.random() * 0.3);
@@ -151,12 +174,23 @@ class Game {
     this.bannerTitle = nightTitle(this.night);
     this.bannerT = 3;
     this.bossThisNight = this.night % 5 === 0;
+    this.climaxThisNight = this.night % 10 === 0;
     if (this.bossThisNight) {
-      this.golem.start();
+      this.golem.start(this.climaxThisNight);
       this.sound.golemGroan();
     } else {
       this.golem.reset();
     }
+    this.crow.reset();
+    this.crowDone = false;
+    this.crowAt = this.nightLength * (0.3 + Math.random() * 0.35);
+  }
+
+  // May the crow visit tonight? From the third night on it circles the
+  // ordinary nights; on boss nights it keeps away — except on the
+  // Longest Night, when everything the dark has comes at once.
+  crowMayVisit() {
+    return this.night >= 3 && (!this.bossThisNight || this.climaxThisNight);
   }
 
   endNight() {
@@ -165,11 +199,13 @@ class Game {
     this.dawnBonus = Math.floor(this.keeper.light) * 2 * this.dawnFactor;
     this.score += this.dawnBonus;
     // A boss night survived pays out of the golem's hoard — and the hoard
-    // guarantees one of the two blessings offered is a rare one.
-    this.bossBonus = this.bossThisNight ? BOSS_BONUS : 0;
+    // guarantees one of the two blessings offered is a rare one. The
+    // Longest Night's hoard is twice as deep.
+    this.bossBonus = this.bossThisNight ? (this.climaxThisNight ? CLIMAX_BONUS : BOSS_BONUS) : 0;
     this.score += this.bossBonus;
     this.options = this.bossThisNight ? pickBossPair() : pickTwo();
     this.golem.reset(); // the crossing ends with the night, however it went
+    this.crow.reset();  // and the crow is gone with it
     this.field.clear();
     this.sound.nightClear();
     this.setScreen('choice');
@@ -212,15 +248,22 @@ class Game {
       const kindled = this.kindledLeft > 0;
       const points = (10 + this.emberBonus) * this.multiplier + (kindled ? 5 : 0);
       this.score += points;
-      k.addLight(kindled ? 10.5 : 6.5); // a kindled flame drinks deep
+      // A kindled flame drinks deep; a twin flame deeper still; and a
+      // Galeheart keeper drinks twice from every catch while her gale
+      // blows — the storm that shoves everyone else feeds her.
+      let sip = (kindled ? 10.5 : 6.5) + this.emberLightBonus;
+      if (this.galeheart && this.galeLeft > 0) sip *= 2;
+      k.addLight(sip);
+      k.pop = 1;
       // The burst grows with the multiplier: a long streak should feel
       // louder under the hands than the first catch of a night.
       this.particles.burst(it.x, k.catchY, '#ffca6a', 15 + this.multiplier * 2, 140 + this.multiplier * 9);
       this.floaters.add(it.x, k.catchY - 18, `+${points}`);
       this.sound.catchChime(this.combo);
-      // Streak milestone: every ninth unbroken catch, the lantern itself
-      // throws a fountain of bonus embers into the air around the keeper.
-      if (this.combo > 0 && this.combo % 9 === 0) {
+      // Streak milestone: every ninth unbroken catch (seventh with a
+      // Twin Flame), the lantern itself throws a fountain of bonus
+      // embers into the air around the keeper.
+      if (this.combo > 0 && this.combo % this.fountainEvery === 0) {
         this.stats.fountains += 1;
         this.field.spawnFountain(k.x, k.catchY);
         this.particles.ring(k.x, k.catchY, '#ffca6a', 74);
@@ -231,6 +274,7 @@ class Game {
       // The dare of the game: a wisp caught kindles the flame for a few
       // seconds — embers feed it far more light and a little more score.
       this.stats.wisps += 1;
+      k.pop = 1;
       this.kindledLeft = 6 * this.kindledFactor;
       const points = 30 * this.multiplier;
       this.score += points;
@@ -255,10 +299,34 @@ class Game {
         this.flash = 0.85;
         this.flashColor = '200, 30, 20';
         this.particles.burst(it.x, k.catchY, '#574a66', 18, 170);
-        this.floaters.add(it.x, k.catchY - 18, 'Ash! −light', '#ff8d7d');
+        // The Ashen Pact pays for the bite — the one blessing that can
+        // make standing under a falling ash lump a decision, not a slip.
+        if (this.ashenPact) {
+          this.score += 25;
+          this.floaters.add(it.x, k.catchY - 18, 'Ash! −light, +25 the pact pays', '#ff8d7d');
+        } else {
+          this.floaters.add(it.x, k.catchY - 18, 'Ash! −light', '#ff8d7d');
+        }
         this.sound.ashThud();
       }
+    } else if (it.kind === KIND.CINDER) {
+      // The crow's stone, caught: the game's one anti-catch. It snuffs
+      // a little less than ash — the flame spits the stone out — but it
+      // spends the streak all the same, and the shield cannot help: a
+      // shield turns aside ash, not a falling rock. The only right
+      // answer to a cinder is to not be under it when it lands.
+      k.light -= 14;
+      this.combo = 0;
+      this.multiplier = 1;
+      this.shake = Math.max(this.shake, 0.32);
+      this.flash = Math.max(this.flash, 0.6);
+      this.flashColor = '255, 110, 40';
+      this.particles.burst(it.x, k.catchY, '#3a2415', 16, 160);
+      this.particles.burst(it.x, k.catchY, '#ff8a3d', 8, 130);
+      this.floaters.add(it.x, k.catchY - 18, 'Cinder! −light', '#ffa26a');
+      this.sound.ashThud();
     } else if (it.kind === KIND.FROST) {
+      k.pop = 1;
       this.slowLeft = 4.5;
       this.particles.burst(it.x, k.catchY, '#bfe6ff', 16, 130);
       this.floaters.add(it.x, k.catchY - 18, 'Time slows', '#bfe6ff');
@@ -268,6 +336,7 @@ class Game {
       // — but the cold water spends the streak it lands on. A rescue when
       // the flame is dying; a real loss when the combo was climbing.
       this.stats.moon += 1;
+      k.pop = 1;
       k.addLight(22);
       const spent = this.combo;
       this.combo = 0;
@@ -285,6 +354,19 @@ class Game {
     // An ember swallowed by the golem: a dull puff where it vanished.
     this.stats.swallowed += 1;
     this.particles.burst(it.x, it.y, '#4a4258', 5, 60);
+  }
+
+  onCinderGround(it) {
+    // The crow's stone, dodged: it cracks on the ridge and spills the
+    // embers it was carrying. The reward for the game's one anti-catch
+    // is paid in the game's own currency — more things to catch.
+    this.stats.cinders += 1;
+    this.field.spawnCinderEmbers(it.x);
+    this.particles.burst(it.x, this.H - 42, '#ff8a3d', 10, 120);
+    this.particles.burst(it.x, this.H - 42, '#2a1a0e', 8, 90);
+    this.particles.ring(it.x, this.H - 42, '#ffa26a', 46);
+    this.floaters.add(it.x, this.H - 72, 'Cracked open!', '#ffa26a');
+    this.sound.cinderCrack();
   }
 
   onStomp(golem) {
@@ -360,17 +442,32 @@ class Game {
     if (this.bannerT > 0) this.bannerT -= dt;
 
     // The golem crosses on the night's own clock (frost slows it too),
-    // and its shadow is a tax on standing still beneath it.
+    // and its shadow is a tax on standing still beneath it — a deeper
+    // tax under the crowned golem of the Longest Night.
     if (this.golem.active) {
       this.golem.update(dt * timeScale, { onStomp: (g) => this.onStomp(g) });
       const inShadow = this.golem.inShadow(this.keeper.x);
       if (inShadow) {
-        this.keeper.light -= SHADOW_DRAIN * dt;
+        this.keeper.light -= SHADOW_DRAIN * (this.golem.enraged ? 1.5 : 1) * dt;
         if (!this.wasInShadow) {
           this.floaters.add(this.keeper.x, this.keeper.catchY - 64, 'The shadow drinks the light!', '#ff9a86');
         }
       }
       this.wasInShadow = inShadow;
+    }
+
+    // The crow arrives partway through its nights, caws once, and drops
+    // its stones aimed at where the keeper stands at each drop.
+    if (!this.crowDone && this.crowMayVisit() && this.nightLeft <= this.nightLength - this.crowAt) {
+      this.crowDone = true;
+      this.crow.start();
+      this.floaters.add(this.W / 2, 128, 'An ash crow circles!', '#ffa26a');
+      this.sound.crowCaw();
+    }
+    if (this.crow.active) {
+      this.crow.update(dt * timeScale, {
+        onDrop: (x, y) => this.field.spawnCinder(x, y, this.keeper.x),
+      });
     }
 
     // The gale: once a night, partway through, the wind rises for five
@@ -387,7 +484,9 @@ class Game {
     if (this.galeLeft > 0) {
       this.galeLeft -= dt;
       wind = this.galeDir * 165;
-      this.keeper.x += this.galeDir * 26 * dt; // the wind worries at her too
+      // The wind worries at the keeper too — unless she holds the
+      // Galeheart, and the gale is hers.
+      if (!this.galeheart) this.keeper.x += this.galeDir * 26 * dt;
       if (Math.random() < 0.55) {
         const fromEdge = this.galeDir > 0 ? -12 : this.W + 12;
         this.particles.streak(fromEdge, 60 + Math.random() * 380, this.galeDir * (380 + Math.random() * 160));
@@ -397,11 +496,13 @@ class Game {
     this.keeper.update(dt, this.input);
 
     // A spark trail while she runs: the faster she moves, the more the
-    // lantern sheds light behind her.
+    // lantern sheds light behind her — and on a long streak the trail
+    // runs hot, bigger and brighter.
     this.trailT -= dt;
     if (Math.abs(this.keeper.vx) > 70 && this.trailT <= 0) {
-      this.trailT = 0.028;
-      this.particles.trail(this.keeper.x - Math.sign(this.keeper.vx) * 12, this.keeper.catchY + 10, this.keeper.vx);
+      const hot = this.combo >= 12;
+      this.trailT = hot ? 0.016 : 0.028;
+      this.particles.trail(this.keeper.x - Math.sign(this.keeper.vx) * 12, this.keeper.catchY + 10, this.keeper.vx, hot);
     }
 
     // The heartbeat of a dying flame, in sound and in the glow alike.
@@ -414,11 +515,20 @@ class Game {
       }
     }
 
+    // The music follows the pressure: a low flame, a kindled one, a
+    // golem crossing or the crow above all swell the pad underneath.
+    this.sound.setIntensity(
+      this.keeper.light / 130 +
+      (this.kindledLeft > 0 ? 0.22 : 0) +
+      (this.golem.active ? 0.16 : 0) +
+      (this.crow.active ? 0.08 : 0));
+
     this.field.update(dt * timeScale, this.night, this.keeper, this.magnetRadius, {
       onCatch: (it) => this.onCatch(it),
       onMissEmber: (it) => this.onMissEmber(it),
       onGround: (it) => this.onGround(it),
       onWispGround: (it) => this.onWispGround(it),
+      onCinderGround: (it) => this.onCinderGround(it),
       onAbsorb: (it) => this.onAbsorb(it),
     }, { wind, spawnBoost: this.galeLeft > 0, golem: this.golem.active ? this.golem : null });
     this.particles.update(dt);
@@ -450,6 +560,15 @@ class Game {
     g.addColorStop(1, 'rgba(2, 3, 10, 0.88)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
+    // A dying flame throbs red at the edges of sight, in time with the
+    // heartbeat — the dark itself warning her.
+    if (this.screen === 'playing' && keeper.heartPulse > 0 && keeper.light < 26) {
+      const pulse = ctx.createRadialGradient(W / 2, H / 2, H * 0.36, W / 2, H / 2, H * 0.8);
+      pulse.addColorStop(0, 'rgba(120, 12, 4, 0)');
+      pulse.addColorStop(1, `rgba(120, 12, 4, ${0.22 * keeper.heartPulse})`);
+      ctx.fillStyle = pulse;
+      ctx.fillRect(0, 0, W, H);
+    }
   }
 
   drawFlash() {
@@ -472,6 +591,7 @@ class Game {
     this.background.draw(ctx, this.keeper.x - W / 2);
     this.field.draw(ctx);
     this.golem.draw(ctx, this.keeper.x);
+    this.crow.draw(ctx);
     this.keeper.draw(ctx);
     this.particles.draw(ctx);
     ctx.restore();
@@ -483,7 +603,10 @@ class Game {
     this.drawFlash();
 
     if (inRun) drawHUD(ctx, this);
-    if (this.screen === 'playing') this.drawBanner();
+    if (this.screen === 'playing') {
+      this.drawBanner();
+      this.drawTutorialHints();
+    }
     if (this.screen === 'title') this.drawTitle();
     else if (this.screen === 'cache') this.drawCache();
     else if (this.screen === 'choice') this.drawChoice();
@@ -513,6 +636,33 @@ class Game {
       ctx.font = '16px Georgia, serif';
       ctx.fillText(this.bannerTitle.sub, W / 2, 208);
     }
+    ctx.restore();
+  }
+
+  // First-night teaching, written on the ridge itself: four short lines
+  // in turn across the opening twenty seconds, each gone before the next
+  // arrives. The game never pauses to explain itself — the night teaches
+  // while it is being survived.
+  drawTutorialHints() {
+    if (this.night !== 1 || this.screen !== 'playing') return;
+    const elapsed = this.nightLength - this.nightLeft;
+    const HINTS = [
+      [0, 5.5, 'Move to catch the golden embers — they feed the flame'],
+      [5.5, 11, 'Keep the dark ash out of the basket'],
+      [11, 16.5, 'Unbroken catches raise your combo — and your score'],
+      [16.5, 22, 'Frost slows time · violet wisps kindle the flame'],
+    ];
+    const hint = HINTS.find(([from, to]) => elapsed >= from && elapsed < to);
+    if (!hint) return;
+    const [from, to, text] = hint;
+    const fade = Math.min(1, (elapsed - from) / 0.8, (to - elapsed) / 0.8);
+    const { ctx } = this;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, fade) * 0.9;
+    ctx.textAlign = 'center';
+    ctx.font = 'italic 16.5px Georgia, serif';
+    ctx.fillStyle = '#ffe9bb';
+    ctx.fillText(text, W / 2, H - 64);
     ctx.restore();
   }
 
@@ -552,28 +702,31 @@ class Game {
     ctx.fillText('Keeper of the Last Lantern', W / 2, 208);
     ctx.fillStyle = 'rgba(232, 226, 208, 0.85)';
     ctx.font = '18px Georgia, serif';
-    ctx.fillText('The valley has one light left, and the night wants it.', W / 2, 268);
-    ctx.fillText('Catch the falling embers to keep your lantern alive —', W / 2, 316);
-    ctx.fillText('but keep the ash out, and mind the frost.', W / 2, 342);
+    ctx.fillText('The valley has one light left, and the night wants it.', W / 2, 262);
+    ctx.fillText('Catch the falling embers to keep your lantern alive —', W / 2, 306);
+    ctx.fillText('but keep the ash out, and mind the frost.', W / 2, 330);
     ctx.fillStyle = 'rgba(216, 180, 255, 0.9)';
-    ctx.fillText('Dare the violet wisps: caught, they kindle the flame —', W / 2, 368);
-    ctx.fillText('burst beside you, they bite it.', W / 2, 392);
+    ctx.fillText('Dare the violet wisps: caught, they kindle the flame —', W / 2, 356);
+    ctx.fillText('burst beside you, they bite it.', W / 2, 380);
+    ctx.fillStyle = 'rgba(255, 162, 106, 0.92)';
+    ctx.fillText('And when the ash crow circles: never catch its cinders —', W / 2, 406);
+    ctx.fillText('let them fall, and gather what cracks open.', W / 2, 430);
     ctx.fillStyle = '#ffd98a';
     ctx.font = '700 21px Georgia, serif';
-    ctx.fillText('Press Enter or click to take up the lantern', W / 2, 420);
+    ctx.fillText('Press Enter or click to take up the lantern', W / 2, 458);
     ctx.fillStyle = 'rgba(232, 226, 208, 0.6)';
     ctx.font = '15px Georgia, serif';
-    ctx.fillText('Mouse or ← → / A D to move · P pause · M mute', W / 2, 452);
+    ctx.fillText('Mouse or ← → / A D to move · P pause · M mute', W / 2, 484);
     // The purse and the shop it feeds: Marks outlive every run.
     ctx.fillStyle = '#ffd98a';
     ctx.font = '700 17px Georgia, serif';
     const cacheLine = `✦ Keeper’s Marks: ${this.meta.marks} — the Keeper’s Cache (press C) ✦`;
-    ctx.fillText(cacheLine, W / 2, 488);
-    this.cacheLinkRect = { x: W / 2 - 250, y: 468, w: 500, h: 28 };
+    ctx.fillText(cacheLine, W / 2, 516);
+    this.cacheLinkRect = { x: W / 2 - 250, y: 496, w: 500, h: 28 };
     if (this.best > 0) {
       ctx.fillStyle = '#ffca6a';
       ctx.font = '17px Georgia, serif';
-      ctx.fillText(`Best score so far: ${this.best}`, W / 2, 520);
+      ctx.fillText(`Best score so far: ${this.best}`, W / 2, 546);
     }
   }
 
@@ -755,6 +908,7 @@ class Game {
       `Embers caught ${this.stats.embers} · best streak ${this.stats.bestStreak} · wisps kindled ${this.stats.wisps}`,
       W / 2, 358);
     const line2 = [`Ash swallowed ${this.stats.ash}`, `moonwater sipped ${this.stats.moon}`];
+    if (this.stats.cinders > 0) line2.push(`cinders cracked ${this.stats.cinders}`);
     if (this.stats.stomps > 0) line2.push(`golem stomps ${this.stats.stomps}`, `embers it ate ${this.stats.swallowed}`);
     ctx.fillText(line2.join(' · '), W / 2, 382);
     ctx.fillStyle = '#ffd98a';

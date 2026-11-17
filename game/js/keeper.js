@@ -3,9 +3,11 @@
 // module owns her position, the lantern's light level (the game's health),
 // the size of the basket that catches falling things, and her drawing —
 // including the glow whose radius is the light level made visible. She
-// leans into her movement, the glow breathes, a dying flame pulses with
-// the heartbeat the game sounds, and a kindled flame (a caught wisp,
-// see main.js) burns visibly hotter with sparks in orbit.
+// moves with real weight — velocity, acceleration, a gentle skid to a
+// stop — leans into her stride, pops a little with every catch, the glow
+// breathes, a dying flame pulses with the heartbeat the game sounds, and
+// a kindled flame (a caught wisp, see main.js) burns visibly hotter with
+// sparks in orbit.
 
 export class Keeper {
   constructor(width, height) {
@@ -24,10 +26,11 @@ export class Keeper {
     this.speed = 620;             // keyboard glide speed, px/s
     this.shield = false;          // ash shield upgrade: blocks one ash hit
     this.flicker = 0;             // flame animation phase
-    this.vx = 0;                  // smoothed horizontal velocity, px/s
+    this.vx = 0;                  // real horizontal velocity, px/s
     this.tilt = 0;                // lean into movement, radians
     this.heartPulse = 0;          // 1 at each heartbeat, decays away
     this.kindled = false;         // a wisp's fire is in the flame
+    this.pop = 0;                 // 1 the instant of a catch, decays away
   }
 
   // The rim of the basket, where catches register.
@@ -48,21 +51,38 @@ export class Keeper {
   update(dt, input) {
     this.flicker += dt * 9;
     this.heartPulse = Math.max(0, this.heartPulse - dt * 2.4);
-    const prevX = this.x;
+    this.pop = Math.max(0, this.pop - dt * 4.5);
+
+    // Movement with weight: she accelerates toward the speed the input
+    // asks for and skids gently to a stop, instead of teleporting
+    // between speeds. Keys ask for the full glide speed; the pointer
+    // asks for a velocity proportional to the distance — near it she
+    // creeps the last few pixels, far from it she hurries — capped a
+    // touch above the key speed so a flicked mouse stays honest.
+    const ACCEL = 3000;   // px/s² toward the asked-for velocity
+    const SKID = 2600;    // px/s² of braking when nothing is asked
     const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    let desired = null;
     if (dir !== 0) {
-      this.x += dir * this.speed * dt;
+      desired = dir * this.speed;
     } else if (input.mouseX !== null && input.mouseActive) {
-      // Glide toward the pointer with a little weight, so fast flicks of
-      // the mouse still feel like carrying something fragile.
       const dx = input.mouseX - this.x;
-      this.x += dx * Math.min(1, dt * 14);
+      desired = Math.max(-700, Math.min(700, dx * 9));
+      if (Math.abs(dx) < 2) desired = 0;
     }
+    if (desired === null) {
+      const step = SKID * dt;
+      this.vx = Math.abs(this.vx) <= step ? 0 : this.vx - Math.sign(this.vx) * step;
+    } else {
+      const dv = desired - this.vx;
+      const step = ACCEL * dt;
+      this.vx += Math.max(-step, Math.min(step, dv));
+    }
+    this.x += this.vx * dt;
     const margin = this.basketHalf + 6;
-    this.x = Math.max(margin, Math.min(this.W - margin, this.x));
-    // Smoothed velocity drives the lean and the spark trail in main.js.
-    const instV = dt > 0 ? (this.x - prevX) / dt : 0;
-    this.vx += (instV - this.vx) * Math.min(1, dt * 10);
+    if (this.x < margin) { this.x = margin; this.vx = Math.max(0, this.vx); }
+    if (this.x > this.W - margin) { this.x = this.W - margin; this.vx = Math.min(0, this.vx); }
+    // The real velocity drives the lean and the spark trail in main.js.
     const targetTilt = Math.max(-0.17, Math.min(0.17, this.vx * 0.00028));
     this.tilt += (targetTilt - this.tilt) * Math.min(1, dt * 8);
     this.light -= this.drainPerSec * dt;
@@ -86,10 +106,13 @@ export class Keeper {
     ctx.fillStyle = halo;
     ctx.fillRect(x - 95, y - 95, 190, 190);
 
-    // Everything she carries leans with her stride.
+    // Everything she carries leans with her stride — and pops with a
+    // catch: a quick squash as the ember lands in the basket, the whole
+    // lantern dipping a breath before it settles.
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(this.tilt);
+    ctx.scale(1 + this.pop * 0.05, 1 - this.pop * 0.08);
 
     // The keeper herself: a small cloaked figure, mostly silhouette.
     ctx.save();

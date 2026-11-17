@@ -32,15 +32,17 @@ export class Particles {
   }
 
   // One spark shed behind the keeper as she runs — her trail of light.
-  trail(x, y, vx) {
+  // On a long streak the trail runs hot: bigger, brighter sparks, the
+  // lantern visibly burning with the run she is on.
+  trail(x, y, vx, hot = false) {
     this.bits.push({
       x, y,
       vx: -vx * 0.25 + (Math.random() - 0.5) * 22,
       vy: -18 - Math.random() * 26,
       life: 0.4 + Math.random() * 0.25,
       age: 0,
-      size: 1.1 + Math.random() * 1.4,
-      color: Math.random() < 0.3 ? '#ffe9a8' : '#ffab4a',
+      size: (1.1 + Math.random() * 1.4) * (hot ? 1.7 : 1),
+      color: hot ? '#ffd23e' : Math.random() < 0.3 ? '#ffe9a8' : '#ffab4a',
       grav: -30, // trail sparks drift up like real sparks off a flame
     });
   }
@@ -179,13 +181,16 @@ export function drawHUD(ctx, game) {
 
   // Event notices, stacked under the night name so several can show at
   // once without colliding: the golem's shadow first (it is the one
-  // costing light), then the boss itself, the gale, frost's slow time
-  // and the kindled flame.
+  // costing light), then the boss itself, the crow, the gale, frost's
+  // slow time and the kindled flame.
   const notices = [];
   if (game.golem && game.golem.active && game.golem.inShadow(keeper.x)) {
     notices.push(['☗ IN THE GOLEM’S SHADOW — the light drains ☗', 'rgba(255, 122, 100, 0.95)']);
   } else if (game.golem && game.golem.active) {
-    notices.push(['☗ THE ASH GOLEM CROSSES ☗', 'rgba(255, 176, 120, 0.85)']);
+    notices.push([game.golem.enraged ? '☗ THE ASH GOLEM, CROWNED IN CINDERS ☗' : '☗ THE ASH GOLEM CROSSES ☗', 'rgba(255, 176, 120, 0.85)']);
+  }
+  if (game.crow && game.crow.active) {
+    notices.push(['♠ THE ASH CROW — let its cinders fall ♠', 'rgba(255, 150, 110, 0.9)']);
   }
   if (game.galeLeft > 0) notices.push(['≋ THE GALE ≋', 'rgba(200, 216, 245, 0.95)']);
   if (game.slowLeft > 0) notices.push(['❄ time drifts slow ❄', 'rgba(190, 230, 255, 0.9)']);

@@ -19,6 +19,7 @@ export class Golem {
     this.bodyHalf = 62;                // half-width of the body mass
     this.shadowHalf = this.bodyHalf + 36; // where its shadow falls
     this.speed = 25;                   // a slow, geological pace, px/s
+    this.enraged = false;              // the crowned variant of the Longest Night
     this.active = false;
     this.x = -220;
     this.dir = 1;
@@ -30,6 +31,7 @@ export class Golem {
 
   reset() {
     this.active = false;
+    this.enraged = false;
     this.x = -220;
     this.lift = 0;
     this.slam = 0;
@@ -37,9 +39,14 @@ export class Golem {
 
   // Begin the crossing from a random edge, walking to the other one. At
   // this pace the crossing takes about as long as the night itself.
-  start() {
+  // `enraged` is the crowned golem of every tenth night — the Longest
+  // Night: it walks faster, stomps oftener, and its shadow (main.js
+  // reads the flag) drinks deeper.
+  start(enraged = false) {
     this.dir = Math.random() < 0.5 ? 1 : -1;
     this.x = this.dir > 0 ? -150 : this.W + 150;
+    this.enraged = enraged;
+    this.speed = enraged ? 37 : 25;
     this.stompT = 2.6;
     this.lift = 0;
     this.slam = 0;
@@ -56,7 +63,7 @@ export class Golem {
     // learns to read), then the foot comes down and the ridge answers.
     this.stompT -= dt;
     if (this.stompT <= 0) {
-      this.stompT = 4.3 + Math.random() * 0.9;
+      this.stompT = this.enraged ? 3.3 + Math.random() * 0.6 : 4.3 + Math.random() * 0.9;
       this.lift = 0;
       this.slam = 1;
       if (hooks.onStomp) hooks.onStomp(this);
@@ -159,6 +166,22 @@ export class Golem {
     ctx.beginPath();
     ctx.ellipse(face * 6, shoulderY + 6, 21, 16, 0, 0, Math.PI * 2);
     ctx.fill();
+    // The crowned golem wears its name: three cinder spikes above the
+    // brow, lit from within like everything it has swallowed.
+    if (this.enraged) {
+      ctx.fillStyle = '#141020';
+      ctx.strokeStyle = 'rgba(255, 110, 40, 0.65)';
+      ctx.lineWidth = 1.2;
+      for (const sx of [-11, 0, 11]) {
+        ctx.beginPath();
+        ctx.moveTo(face * 6 + sx - 4.5, shoulderY - 6);
+        ctx.lineTo(face * 6 + sx, shoulderY - 24 - (sx === 0 ? 5 : 0));
+        ctx.lineTo(face * 6 + sx + 4.5, shoulderY - 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
     const emberEye = 0.65 + Math.sin(this.walkPhase * 0.7) * 0.3;
     ctx.fillStyle = `rgba(255, 166, 66, ${emberEye})`;
     for (const side of [-1, 1]) {
@@ -168,7 +191,10 @@ export class Golem {
     }
 
     // Ember cracks: the old fire inside it, showing through the ash.
-    ctx.strokeStyle = `rgba(255, 130, 40, ${0.34 + Math.sin(this.walkPhase * 0.9) * 0.12})`;
+    // Crowned, the fire runs hotter and redder.
+    ctx.strokeStyle = this.enraged
+      ? `rgba(255, 84, 26, ${0.55 + Math.sin(this.walkPhase * 0.9) * 0.18})`
+      : `rgba(255, 130, 40, ${0.34 + Math.sin(this.walkPhase * 0.9) * 0.12})`;
     ctx.lineWidth = 1.6;
     const cracks = [
       [[-30, -150], [-14, -128], [-22, -104]],

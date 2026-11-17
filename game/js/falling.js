@@ -1,14 +1,17 @@
 // falling.js — everything that falls out of the night sky: golden embers
 // (catch for points and light), dark ash lumps (catch and the flame
 // suffers), pale frost shards (catch to slow the fall of time itself),
-// storm wisps — rare violet orbs that dart sideways as they fall — and
+// storm wisps — rare violet orbs that dart sideways as they fall —
 // moonwater, a rare blue droplet that pours light back into the lantern
-// at the price of the streak. A wisp caught kindles the flame (see
-// main.js); a wisp that strikes the ridge near the keeper bursts in a
-// zap. This module owns spawning, motion, magnet drift and collision
-// tests; the game in main.js decides what a catch or a miss means.
+// at the price of the streak, and cinders, the hot stones the Ash Crow
+// drops (see crows.js): catch one and it snuffs the flame like ash, but
+// let it strike the ridge and it cracks open into bonus embers. A wisp
+// caught kindles the flame (see main.js); a wisp that strikes the ridge
+// near the keeper bursts in a zap. This module owns spawning, motion,
+// magnet drift and collision tests; the game in main.js decides what a
+// catch or a miss means.
 
-export const KIND = { EMBER: 'ember', ASH: 'ash', FROST: 'frost', WISP: 'wisp', MOON: 'moon' };
+export const KIND = { EMBER: 'ember', ASH: 'ash', FROST: 'frost', WISP: 'wisp', MOON: 'moon', CINDER: 'cinder' };
 
 export class FallingField {
   constructor(width, height) {
@@ -25,12 +28,17 @@ export class FallingField {
   }
 
   // Difficulty knobs for a night: later nights fall faster, spawn thicker
-  // and throw more ash (and a few more wisps) into the mix.
+  // and throw more ash (and a few more wisps) into the mix. The first six
+  // nights climb gently while the keeper learns the sky; past the sixth
+  // the climb steepens — fall speed and spawn pressure grow by half again
+  // per night and the ash share keeps rising — so a long run keeps
+  // tightening instead of settling into a rhythm the hands have solved.
   profile(night) {
+    const late = Math.max(0, night - 6); // nights past the sixth escalate harder
     return {
-      fall: 95 + (night - 1) * 22,                       // base fall speed px/s
-      interval: Math.max(0.32, 0.56 - (night - 1) * 0.04), // seconds per spawn
-      ashChance: Math.min(0.30, 0.13 + (night - 1) * 0.03),
+      fall: 95 + (night - 1) * 22 + late * 9,                       // base fall speed px/s
+      interval: Math.max(0.30, 0.56 - (night - 1) * 0.04 - late * 0.012), // seconds per spawn
+      ashChance: Math.min(0.34, 0.13 + (night - 1) * 0.03),
       frostChance: 0.055,
       wispChance: Math.min(0.075, 0.038 + (night - 1) * 0.007),
       // Moonwater seeps in from the second night on — a rare mercy.
@@ -114,9 +122,59 @@ export class FallingField {
     }
   }
 
+  // A cinder dropped by the Ash Crow. It leaves the crow's claws slow and
+  // dives, gravity hauling it down faster than anything the sky throws,
+  // aimed a little toward where the keeper stood at the drop — she has
+  // about a second to step aside, or to step under it on purpose and pay
+  // the price. Caught, it snuffs like ash; landed, it cracks open (see
+  // spawnCinderEmbers and main.js's onCinderGround).
+  spawnCinder(x, y, keeperX) {
+    const aim = Math.max(-150, Math.min(150, (keeperX - x) * 0.5));
+    this.items.push({
+      kind: KIND.CINDER,
+      x,
+      y,
+      vy: 30,
+      vx: aim,
+      grav: 430,
+      noCatchT: 0,
+      bonus: false,
+      dartT: 0,
+      sway: Math.random() * Math.PI * 2,
+      swaySpeed: 1 + Math.random(),
+      r: 9,
+      spin: Math.random() * Math.PI * 2,
+    });
+  }
+
+  // What a landed cinder leaves behind: two bonus embers bursting out of
+  // the cracked stone, arcing low and wide. Like fountain and stomp
+  // embers they are a gift — catchable at once, and a miss never breaks
+  // a combo — so the keeper who dodged well is paid in light.
+  spawnCinderEmbers(x) {
+    const groundY = this.H - 46;
+    for (const dir of [-1, 1]) {
+      this.items.push({
+        kind: KIND.EMBER,
+        x: x + dir * 8,
+        y: groundY,
+        vy: -(175 + Math.random() * 65),
+        vx: dir * (74 + Math.random() * 46),
+        grav: 305,
+        noCatchT: 0.4,
+        bonus: true,
+        dartT: 0,
+        sway: Math.random() * Math.PI * 2,
+        swaySpeed: 1 + Math.random(),
+        r: 8,
+        spin: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
   // Advance the field. `hooks` receives onCatch(item), onMissEmber(item),
-  // onGround(item), onWispGround(item) and onAbsorb(item) so the rules
-  // live in one place (main.js). `opts.wind` is the gale's sideways push
+  // onGround(item), onWispGround(item), onCinderGround(item) and
+  // onAbsorb(item) so the rules live in one place (main.js). `opts.wind` is the gale's sideways push
   // in px/s, `opts.spawnBoost` thickens the spawn rate while the gale
   // blows, and `opts.golem`, when the Ash Golem is crossing, swallows
   // embers that fall into its body. The caller has already applied the
@@ -189,6 +247,7 @@ export class FallingField {
       if (it.y > groundY) {
         if (it.kind === KIND.EMBER) hooks.onMissEmber(it);
         else if (it.kind === KIND.WISP) hooks.onWispGround(it);
+        else if (it.kind === KIND.CINDER) hooks.onCinderGround(it);
         else hooks.onGround(it);
         continue;
       }
@@ -203,8 +262,56 @@ export class FallingField {
       else if (it.kind === KIND.ASH) this.drawAsh(ctx, it);
       else if (it.kind === KIND.WISP) this.drawWisp(ctx, it);
       else if (it.kind === KIND.MOON) this.drawMoon(ctx, it);
+      else if (it.kind === KIND.CINDER) this.drawCinder(ctx, it);
       else this.drawFrost(ctx, it);
     }
+  }
+
+  drawCinder(ctx, it) {
+    // A cinder: a black stone with the fire still inside it. The glow
+    // breathes through the cracks and a short smear of heat trails above
+    // it — it falls faster than anything else in the sky, and the eye
+    // should know this one is not for catching.
+    const pulse = 0.75 + Math.sin(it.sway * 6) * 0.25;
+    ctx.fillStyle = 'rgba(255, 110, 40, 0.16)';
+    ctx.beginPath(); // heat smear above the stone
+    ctx.ellipse(it.x, it.y - 13, 5.5, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const g = ctx.createRadialGradient(it.x, it.y, 0, it.x, it.y, 17);
+    g.addColorStop(0, `rgba(255, 170, 70, ${0.5 * pulse})`);
+    g.addColorStop(0.45, `rgba(255, 100, 30, ${0.28 * pulse})`);
+    g.addColorStop(1, 'rgba(200, 60, 10, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(it.x, it.y, 17, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.save();
+    ctx.translate(it.x, it.y);
+    ctx.rotate(it.spin * 0.5);
+    ctx.fillStyle = '#191008';
+    ctx.beginPath();
+    const n = 7;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const rr = it.r * (0.8 + ((i * 29) % 10) / 24);
+      const px = Math.cos(a) * rr;
+      const py = Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255, 130, 45, ${0.55 + 0.4 * pulse})`;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath(); // the cracks the fire breathes through
+    ctx.moveTo(-5, -3);
+    ctx.lineTo(-1, 1);
+    ctx.lineTo(-3, 5);
+    ctx.moveTo(-1, 1);
+    ctx.lineTo(4, 3);
+    ctx.moveTo(-1, 1);
+    ctx.lineTo(2, -4);
+    ctx.stroke();
+    ctx.restore();
   }
 
   drawEmber(ctx, it) {

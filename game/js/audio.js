@@ -11,6 +11,21 @@ export class SoundEngine {
     this.master = null;
     this.muted = false;
     this.ambienceOn = false;
+    this.intensity = 0.3;   // 0..1 — how hard the night is pressing
+    this.padBus = null;     // the ambience pad runs through this gain
+  }
+
+  // The night pressing harder should sound like it: main.js reports the
+  // pressure (light low, flame kindled, the golem crossing) and the pad
+  // underneath the ambience swells to meet it. Small changes are ignored
+  // so the gain is not chased every frame.
+  setIntensity(v) {
+    const level = Math.max(0, Math.min(1, v));
+    if (Math.abs(level - this.intensity) < 0.03) return;
+    this.intensity = level;
+    if (this.padBus && this.ctx) {
+      this.padBus.gain.setTargetAtTime(0.6 + level * 0.95, this.ctx.currentTime, 0.5);
+    }
   }
 
   // Create (or resume) the context. Safe to call on every gesture.
@@ -210,8 +225,39 @@ export class SoundEngine {
     this.tone(1760, 0.42, { type: 'sine', vol: 0.1, delay: 0.07 });
   }
 
+  // The Ash Crow announcing itself: two harsh descending squawks, the
+  // second lower — a sound with feathers and spite in it.
+  crowCaw() {
+    this.tone(740, 0.16, { type: 'sawtooth', vol: 0.07, slideTo: 420 });
+    this.tone(660, 0.2, { type: 'sawtooth', vol: 0.06, slideTo: 340, delay: 0.19 });
+    this.tone(1180, 0.1, { type: 'square', vol: 0.02, slideTo: 700, delay: 0.02 });
+  }
+
+  // A cinder cracking open on the ridge: a stone snap and the bright
+  // little ring of the embers spilling out of it.
+  cinderCrack() {
+    this.tone(190, 0.12, { type: 'square', vol: 0.12, slideTo: 70 });
+    this.tone(1568, 0.3, { type: 'triangle', vol: 0.09, delay: 0.05 });
+    this.tone(2093, 0.34, { type: 'sine', vol: 0.06, delay: 0.1 });
+    if (!this.ctx || this.muted) return;
+    const dur = 0.07;
+    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 900;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.2;
+    src.connect(filter).connect(gain).connect(this.master);
+    src.start();
+  }
+
   // Looping night air: slow filtered wind noise, faint ember crackle, and a
-  // very quiet pad that cycles through a four-chord motif. Started once.
+  // very quiet pad that cycles through a four-chord motif, swelling with
+  // the night's intensity. Started once.
   startAmbience() {
     if (!this.ctx || this.ambienceOn) return;
     this.ambienceOn = true;
@@ -240,7 +286,13 @@ export class SoundEngine {
     wander.connect(wanderGain).connect(band.frequency);
     wander.start();
 
-    // Pad motif: Am — F — C — G, one chord every six seconds.
+    // Pad motif: Am — F — C — G, one chord every six seconds, played
+    // through a bus whose level follows the night's intensity (see
+    // setIntensity): calm water at dusk, a swell when the flame is
+    // kindled, the golem is crossing, or the light runs low.
+    this.padBus = ctx.createGain();
+    this.padBus.gain.value = 0.6 + this.intensity * 0.95;
+    this.padBus.connect(this.master);
     const chords = [[110, 164.8, 261.6], [87.3, 174.6, 261.6], [98, 196, 293.7], [98, 146.8, 246.9]];
     let chordIdx = 0;
     const playChord = () => {
@@ -254,7 +306,7 @@ export class SoundEngine {
         g.gain.setValueAtTime(0, t0);
         g.gain.linearRampToValueAtTime(0.016, t0 + 1.6);
         g.gain.linearRampToValueAtTime(0, t0 + 6.2);
-        osc.connect(g).connect(this.master);
+        osc.connect(g).connect(this.padBus);
         osc.start(t0);
         osc.stop(t0 + 6.4);
       }

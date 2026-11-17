@@ -43,6 +43,20 @@ export const UPGRADES = [
     },
   },
   {
+    id: 'galeheart',
+    name: 'Galeheart',
+    desc: 'The gale is yours now: it cannot shove you, and while it blows every catch feeds the flame twice the light.',
+    icon: '≋',
+    apply(game) { game.galeheart = true; },
+  },
+  {
+    id: 'ashenpact',
+    name: 'Ashen Pact',
+    desc: 'A dark bargain: ash you swallow pays +25 points. It still snuffs the flame — some catches are worth the bite.',
+    icon: '♠',
+    apply(game) { game.ashenPact = true; },
+  },
+  {
     id: 'stormglass',
     name: 'Stormglass Charm',
     desc: 'Wisps kindle the flame far longer, and a burst wisp feeds it +5 light instead of zapping.',
@@ -51,6 +65,17 @@ export const UPGRADES = [
     apply(game) {
       game.kindledFactor = 1.8;
       game.wispWard = true;
+    },
+  },
+  {
+    id: 'twinflame',
+    name: 'Twin Flame',
+    desc: 'A second flame wakes beside the first: every ember feeds +2.5 more light, and streak fountains burst every 7 catches instead of 9.',
+    icon: '❖',
+    rare: true,
+    apply(game) {
+      game.emberLightBonus += 2.5;
+      game.fountainEvery = 7;
     },
   },
   {

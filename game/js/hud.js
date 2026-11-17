@@ -178,9 +178,15 @@ export function drawHUD(ctx, game) {
   ctx.strokeRect(barX, barY, barW, 15);
 
   // Event notices, stacked under the night name so several can show at
-  // once without colliding: the gale first, then frost's slow time, then
-  // the kindled flame.
+  // once without colliding: the golem's shadow first (it is the one
+  // costing light), then the boss itself, the gale, frost's slow time
+  // and the kindled flame.
   const notices = [];
+  if (game.golem && game.golem.active && game.golem.inShadow(keeper.x)) {
+    notices.push(['☗ IN THE GOLEM’S SHADOW — the light drains ☗', 'rgba(255, 122, 100, 0.95)']);
+  } else if (game.golem && game.golem.active) {
+    notices.push(['☗ THE ASH GOLEM CROSSES ☗', 'rgba(255, 176, 120, 0.85)']);
+  }
   if (game.galeLeft > 0) notices.push(['≋ THE GALE ≋', 'rgba(200, 216, 245, 0.95)']);
   if (game.slowLeft > 0) notices.push(['❄ time drifts slow ❄', 'rgba(190, 230, 255, 0.9)']);
   if (game.kindledLeft > 0) notices.push(['✦ KINDLED — the flame drinks deep ✦', 'rgba(216, 180, 255, 0.95)']);

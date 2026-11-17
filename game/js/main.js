@@ -1,7 +1,7 @@
 // main.js — EMBERFALL: Keeper of the Last Lantern.
 //
 // Boot, the game loop, input, and the screen state machine. The screens are
-// title / playing / choice / paused / gameover; every change is mirrored to
+// title / cache / playing / choice / paused / gameover; every change is mirrored to
 // document.body.dataset.screen so the page styling (and anything watching
 // the page) can react to where the game is.
 //
@@ -13,17 +13,47 @@
 // from every ember, but let one burst beside you and it zaps. Once a
 // night a gale rises and shoves the whole sky sideways. And whatever
 // light you still hold when a night ends, the dawn pays back in score.
+//
+// Every fifth night the Ash Golem crosses the valley: it swallows the
+// embers that fall into it, its shadow drinks the light, and its stomps
+// shake bonus embers loose — survive it and the dawn offers a rare
+// blessing. Moonwater sometimes falls too, a droplet that pours light
+// back into the lantern but spends the streak it lands on. And every run
+// earns Keeper's Marks, spent between runs in the Keeper's Cache on
+// blessings that never fade.
 
 import { Keeper } from './keeper.js';
 import { FallingField, KIND } from './falling.js';
-import { pickTwo, applyUpgrade } from './upgrades.js';
+import { pickTwo, pickBossPair, applyUpgrade } from './upgrades.js';
 import { SoundEngine } from './audio.js';
 import { Particles, Floaters, drawHUD } from './hud.js';
 import { Background } from './render.js';
+import { Golem } from './golem.js';
+import { CACHE_ITEMS, loadMeta, saveMeta, buyItem, priceFor, ownedLevel, marksEarnedForRun, applyMeta } from './meta.js';
 
 const W = 960;
 const H = 600;
 const BEST_KEY = 'emberfall-best';
+const BOSS_BONUS = 150;   // score for surviving a golem night
+const SHADOW_DRAIN = 1.7; // extra light per second inside the golem's shadow
+
+// Every night has a name, and the name says what kind of night it is.
+// Boss nights name the golem; the rest cycle through the valley's moods.
+const NIGHT_NAMES = [
+  'The First Dark', 'Ember Rain', 'Ashfall Hollow', 'The Whispering Dark',
+  'Wisp Hollow', 'Moonwater Springs', 'The Long Fall', 'Stormwrack',
+  'The Starless Deep', 'Emberfall Deepens',
+];
+const GOLEM_NAMES = ['The Ash Golem', 'The Ash Golem Returns', 'The Ash Golem, Unbowed'];
+
+function nightTitle(night) {
+  if (night % 5 === 0) {
+    const name = GOLEM_NAMES[Math.floor(night / 5 - 1) % GOLEM_NAMES.length];
+    return { name, sub: 'It drinks the falling light. Keep out of its shadow.' };
+  }
+  const name = NIGHT_NAMES[(night - 1) % NIGHT_NAMES.length];
+  return { name, sub: night === 1 ? 'Keep the lantern lit until dawn.' : '' };
+}
 
 class Game {
   constructor(canvas) {
@@ -33,10 +63,17 @@ class Game {
     this.H = H;
     this.keeper = new Keeper(W, H);
     this.field = new FallingField(W, H);
+    this.golem = new Golem(W, H);
     this.background = new Background(W, H);
     this.particles = new Particles();
     this.floaters = new Floaters();
     this.sound = new SoundEngine();
+    this.meta = loadMeta();       // Keeper's Marks and Cache levels
+    this.marksEarned = 0;         // what the last finished run left behind
+    this.cacheRows = [];          // clickable rows, rebuilt by drawCache
+    this.cacheMsg = '';           // last purchase result, shown in the Cache
+    this.muteRect = { x: W - 128, y: H - 30, w: 120, h: 24 };
+    this.cacheLinkRect = null;    // set by drawTitle each frame it shows
     this.input = { left: false, right: false, mouseX: null, mouseActive: false };
     this.best = Number(localStorage.getItem(BEST_KEY) || 0);
     this.screen = 'title';
@@ -73,11 +110,19 @@ class Game {
     this.galeLeft = 0;
     this.galeDir = 1;
     this.galeDone = false;
+    // Boss nights and the intro banner that names each night.
+    this.bossThisNight = false;   // a golem is crossing (or crossed) tonight
+    this.bossBonus = 0;           // what surviving it paid, shown at dawn
+    this.bannerT = 0;             // seconds of night-name banner remaining
+    this.bannerTitle = null;      // {name, sub} for the current night
+    this.wasInShadow = false;     // edge trigger for the shadow warning
     // Run tallies for the game-over screen, and small timers.
-    this.stats = { embers: 0, wisps: 0, ash: 0, fountains: 0 };
+    this.stats = { embers: 0, wisps: 0, ash: 0, fountains: 0, moon: 0, bestStreak: 0, swallowed: 0, stomps: 0 };
     this.heartbeatT = 0;
     this.trailT = 0;
     this.keeper.reset();
+    this.golem.reset();
+    applyMeta(this); // the Cache's permanent blessings ride on every run
     this.field.clear();
     this.particles.clear();
     this.floaters.clear();
@@ -92,7 +137,26 @@ class Game {
     this.sound.ensure();
     this.sound.startAmbience();
     this.resetRun();
+    this.beginNight();
     this.setScreen('playing');
+  }
+
+  // Set up the night that is about to begin: its gale, its name on the
+  // banner, and — every fifth night — the golem's crossing.
+  beginNight() {
+    this.nightLeft = this.nightLength;
+    this.galeAt = this.nightLength * (0.35 + Math.random() * 0.3);
+    this.galeDone = false;
+    this.galeLeft = 0;
+    this.bannerTitle = nightTitle(this.night);
+    this.bannerT = 3;
+    this.bossThisNight = this.night % 5 === 0;
+    if (this.bossThisNight) {
+      this.golem.start();
+      this.sound.golemGroan();
+    } else {
+      this.golem.reset();
+    }
   }
 
   endNight() {
@@ -100,7 +164,12 @@ class Game {
     // all night is suddenly a strategy, not just survival.
     this.dawnBonus = Math.floor(this.keeper.light) * 2 * this.dawnFactor;
     this.score += this.dawnBonus;
-    this.options = pickTwo();
+    // A boss night survived pays out of the golem's hoard — and the hoard
+    // guarantees one of the two blessings offered is a rare one.
+    this.bossBonus = this.bossThisNight ? BOSS_BONUS : 0;
+    this.score += this.bossBonus;
+    this.options = this.bossThisNight ? pickBossPair() : pickTwo();
+    this.golem.reset(); // the crossing ends with the night, however it went
     this.field.clear();
     this.sound.nightClear();
     this.setScreen('choice');
@@ -111,13 +180,10 @@ class Game {
     if (!upgrade) return;
     applyUpgrade(this, upgrade);
     this.night += 1;
-    this.nightLeft = this.nightLength;
-    this.galeAt = this.nightLength * (0.35 + Math.random() * 0.3);
-    this.galeDone = false;
-    this.galeLeft = 0;
     this.keeper.addLight(18); // a breath between nights
     if (this.shieldPerNight) this.keeper.shield = true;
     this.sound.nightBell();
+    this.beginNight();
     this.setScreen('playing');
   }
 
@@ -126,6 +192,11 @@ class Game {
       this.best = this.score;
       localStorage.setItem(BEST_KEY, String(this.best));
     }
+    // The run is spent, but it leaves Marks behind — the currency that
+    // outlives any single night.
+    this.marksEarned = marksEarnedForRun(this.score, this.night - 1);
+    this.meta.marks += this.marksEarned;
+    saveMeta(this.meta);
     this.setScreen('gameover');
   }
 
@@ -136,6 +207,7 @@ class Game {
     if (it.kind === KIND.EMBER) {
       this.combo += 1;
       this.stats.embers += 1;
+      if (this.combo > this.stats.bestStreak) this.stats.bestStreak = this.combo;
       this.multiplier = Math.min(8, 1 + Math.floor(this.combo / 3));
       const kindled = this.kindledLeft > 0;
       const points = (10 + this.emberBonus) * this.multiplier + (kindled ? 5 : 0);
@@ -170,6 +242,8 @@ class Game {
       this.stats.ash += 1;
       if (k.shield) {
         k.shield = false;
+        // A maxed Ward Charm turns the block into a sip of light.
+        if (ownedLevel(this.meta, 'wardcharm') >= 3) k.addLight(4);
         this.particles.burst(it.x, k.catchY, '#a8d4ff', 16, 150);
         this.floaters.add(it.x, k.catchY - 18, 'Blocked!', '#a8d4ff');
         this.sound.frostShimmer();
@@ -189,7 +263,40 @@ class Game {
       this.particles.burst(it.x, k.catchY, '#bfe6ff', 16, 130);
       this.floaters.add(it.x, k.catchY - 18, 'Time slows', '#bfe6ff');
       this.sound.frostShimmer();
+    } else if (it.kind === KIND.MOON) {
+      // Moonwater: the lantern drinks deep — a solid chunk of light, now
+      // — but the cold water spends the streak it lands on. A rescue when
+      // the flame is dying; a real loss when the combo was climbing.
+      this.stats.moon += 1;
+      k.addLight(22);
+      const spent = this.combo;
+      this.combo = 0;
+      this.multiplier = 1;
+      this.score += 5;
+      this.particles.burst(it.x, k.catchY, '#7db4ff', 18, 140);
+      this.particles.ring(it.x, k.catchY, '#9cc8ff', 58);
+      this.floaters.add(it.x, k.catchY - 18,
+        spent > 0 ? 'Moonwater +22 light — streak spent' : 'Moonwater +22 light', '#bcd9ff');
+      this.sound.moonSip();
     }
+  }
+
+  onAbsorb(it) {
+    // An ember swallowed by the golem: a dull puff where it vanished.
+    this.stats.swallowed += 1;
+    this.particles.burst(it.x, it.y, '#4a4258', 5, 60);
+  }
+
+  onStomp(golem) {
+    // The ridge answers the golem's foot: dust, a shiver through the
+    // ground, and the burst of embers the stomp shook loose.
+    this.stats.stomps += 1;
+    this.shake = Math.max(this.shake, 0.28);
+    this.field.spawnStompBurst(golem.x);
+    this.particles.burst(golem.x - golem.bodyHalf * 0.5, this.H - 42, '#6b5a44', 12, 120);
+    this.particles.burst(golem.x + golem.bodyHalf * 0.5, this.H - 42, '#6b5a44', 12, 120);
+    this.particles.ring(golem.x, this.H - 40, '#8a7a5c', 84);
+    this.sound.golemStomp();
   }
 
   onMissEmber(it) {
@@ -250,6 +357,21 @@ class Game {
     if (this.slowLeft > 0) this.slowLeft -= dt;
     if (this.kindledLeft > 0) this.kindledLeft -= dt;
     this.keeper.kindled = this.kindledLeft > 0;
+    if (this.bannerT > 0) this.bannerT -= dt;
+
+    // The golem crosses on the night's own clock (frost slows it too),
+    // and its shadow is a tax on standing still beneath it.
+    if (this.golem.active) {
+      this.golem.update(dt * timeScale, { onStomp: (g) => this.onStomp(g) });
+      const inShadow = this.golem.inShadow(this.keeper.x);
+      if (inShadow) {
+        this.keeper.light -= SHADOW_DRAIN * dt;
+        if (!this.wasInShadow) {
+          this.floaters.add(this.keeper.x, this.keeper.catchY - 64, 'The shadow drinks the light!', '#ff9a86');
+        }
+      }
+      this.wasInShadow = inShadow;
+    }
 
     // The gale: once a night, partway through, the wind rises for five
     // seconds and shoves everything that falls — keeper included, a
@@ -297,7 +419,8 @@ class Game {
       onMissEmber: (it) => this.onMissEmber(it),
       onGround: (it) => this.onGround(it),
       onWispGround: (it) => this.onWispGround(it),
-    }, { wind, spawnBoost: this.galeLeft > 0 });
+      onAbsorb: (it) => this.onAbsorb(it),
+    }, { wind, spawnBoost: this.galeLeft > 0, golem: this.golem.active ? this.golem : null });
     this.particles.update(dt);
     this.floaters.update(dt);
 
@@ -348,6 +471,7 @@ class Game {
     }
     this.background.draw(ctx, this.keeper.x - W / 2);
     this.field.draw(ctx);
+    this.golem.draw(ctx, this.keeper.x);
     this.keeper.draw(ctx);
     this.particles.draw(ctx);
     ctx.restore();
@@ -359,10 +483,50 @@ class Game {
     this.drawFlash();
 
     if (inRun) drawHUD(ctx, this);
+    if (this.screen === 'playing') this.drawBanner();
     if (this.screen === 'title') this.drawTitle();
+    else if (this.screen === 'cache') this.drawCache();
     else if (this.screen === 'choice') this.drawChoice();
     else if (this.screen === 'paused') this.drawCentred(['Paused', 'P to resume']);
     else if (this.screen === 'gameover') this.drawGameOver();
+    this.drawMuteToggle();
+  }
+
+  // The night's name, announced as the night begins and gone before it
+  // can get in the way: a slow fade in, a hold, a fade out.
+  drawBanner() {
+    if (this.bannerT <= 0 || !this.bannerTitle) return;
+    const { ctx } = this;
+    const t = this.bannerT; // 3 → 0 over the banner's life
+    const alpha = t > 2.5 ? (3 - t) * 2 : t < 0.7 ? t / 0.7 : 1;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffe9bb';
+    ctx.font = '700 34px Georgia, serif';
+    ctx.fillText(`Night ${this.night}`, W / 2, 148);
+    ctx.fillStyle = this.bossThisNight ? '#ffb08a' : '#ffca6a';
+    ctx.font = 'italic 700 25px Georgia, serif';
+    ctx.fillText(this.bannerTitle.name, W / 2, 182);
+    if (this.bannerTitle.sub) {
+      ctx.fillStyle = 'rgba(232, 226, 208, 0.85)';
+      ctx.font = '16px Georgia, serif';
+      ctx.fillText(this.bannerTitle.sub, W / 2, 208);
+    }
+    ctx.restore();
+  }
+
+  // The mute state, always visible in the corner — sound is part of the
+  // game, and its switch should be seen, not just remembered. Clickable.
+  drawMuteToggle() {
+    const { ctx } = this;
+    const r = this.muteRect;
+    ctx.save();
+    ctx.textAlign = 'right';
+    ctx.font = '13px Georgia, serif';
+    ctx.fillStyle = this.sound.muted ? 'rgba(255, 140, 120, 0.85)' : 'rgba(232, 226, 208, 0.55)';
+    ctx.fillText(this.sound.muted ? '✕ sound off (M)' : '♪ sound on (M)', r.x + r.w, r.y + 16);
+    ctx.restore();
   }
 
   drawCentred(lines) {
@@ -400,10 +564,100 @@ class Game {
     ctx.fillStyle = 'rgba(232, 226, 208, 0.6)';
     ctx.font = '15px Georgia, serif';
     ctx.fillText('Mouse or ← → / A D to move · P pause · M mute', W / 2, 452);
+    // The purse and the shop it feeds: Marks outlive every run.
+    ctx.fillStyle = '#ffd98a';
+    ctx.font = '700 17px Georgia, serif';
+    const cacheLine = `✦ Keeper’s Marks: ${this.meta.marks} — the Keeper’s Cache (press C) ✦`;
+    ctx.fillText(cacheLine, W / 2, 488);
+    this.cacheLinkRect = { x: W / 2 - 250, y: 468, w: 500, h: 28 };
     if (this.best > 0) {
       ctx.fillStyle = '#ffca6a';
       ctx.font = '17px Georgia, serif';
-      ctx.fillText(`Best score so far: ${this.best}`, W / 2, 492);
+      ctx.fillText(`Best score so far: ${this.best}`, W / 2, 520);
+    }
+  }
+
+  // The Keeper's Cache: where Marks become permanent blessings. Three
+  // shelves, three levels each, prices climbing — keys 1–3 or a click
+  // buy, Esc or the back line returns to the title.
+  drawCache() {
+    const { ctx } = this;
+    ctx.fillStyle = 'rgba(4, 6, 16, 0.82)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffe9bb';
+    ctx.font = '700 36px Georgia, serif';
+    ctx.fillText('The Keeper’s Cache', W / 2, 104);
+    ctx.fillStyle = 'rgba(232, 226, 208, 0.85)';
+    ctx.font = '17px Georgia, serif';
+    ctx.fillText('Blessings bought with Keeper’s Marks never fade.', W / 2, 134);
+    ctx.fillStyle = '#ffd98a';
+    ctx.font = '700 19px Georgia, serif';
+    ctx.fillText(`✦ Marks: ${this.meta.marks}`, W / 2, 166);
+
+    const rowW = 660, rowH = 92, gap = 14, x0 = (W - rowW) / 2;
+    this.cacheRows = CACHE_ITEMS.map((item, i) => ({
+      x: x0, y: 188 + i * (rowH + gap), w: rowW, h: rowH, id: item.id,
+    }));
+    for (const row of this.cacheRows) {
+      const item = CACHE_ITEMS.find((it) => it.id === row.id);
+      const lvl = ownedLevel(this.meta, item.id);
+      const price = priceFor(this.meta, item);
+      const afford = price !== null && this.meta.marks >= price;
+      ctx.fillStyle = 'rgba(20, 27, 52, 0.95)';
+      ctx.strokeStyle = afford ? 'rgba(255, 202, 106, 0.75)' : 'rgba(160, 170, 200, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(row.x, row.y, row.w, row.h, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#ffca6a';
+      ctx.font = '34px Georgia, serif';
+      ctx.fillText(item.icon, row.x + 22, row.y + 56);
+      ctx.font = '700 21px Georgia, serif';
+      ctx.fillStyle = '#ffe9bb';
+      const pips = '●'.repeat(lvl) + '○'.repeat(item.prices.length - lvl);
+      ctx.fillText(`${item.name}  ${pips}`, row.x + 72, row.y + 34);
+      ctx.font = '15px Georgia, serif';
+      ctx.fillStyle = 'rgba(232, 226, 208, 0.85)';
+      const blurb = price === null ? 'Fully bought — it rides with you now.' : item.desc[lvl];
+      this.wrapText(blurb, row.x + 72, row.y + 60, 440, 19, 'left');
+      ctx.textAlign = 'right';
+      ctx.font = '700 17px Georgia, serif';
+      ctx.fillStyle = price === null ? 'rgba(160, 220, 160, 0.9)' : afford ? '#ffd98a' : 'rgba(232, 226, 208, 0.45)';
+      ctx.fillText(price === null ? 'MAX' : `Buy · ${price} ✦`, row.x + row.w - 20, row.y + 40);
+      ctx.font = '13px Georgia, serif';
+      ctx.fillStyle = 'rgba(232, 226, 208, 0.5)';
+      ctx.fillText(`press ${this.cacheRows.indexOf(row) + 1}`, row.x + row.w - 20, row.y + 62);
+      ctx.textAlign = 'center';
+    }
+
+    if (this.cacheMsg) {
+      ctx.fillStyle = '#ffd98a';
+      ctx.font = '16px Georgia, serif';
+      ctx.fillText(this.cacheMsg, W / 2, 516);
+    }
+    ctx.fillStyle = 'rgba(232, 226, 208, 0.7)';
+    ctx.font = '16px Georgia, serif';
+    ctx.fillText('Esc to return to the title', W / 2, 556);
+    this.cacheBackRect = { x: W / 2 - 160, y: 534, w: 320, h: 30 };
+  }
+
+  buyFromCache(id) {
+    const item = CACHE_ITEMS.find((it) => it.id === id);
+    if (!item) return;
+    const price = priceFor(this.meta, item);
+    if (price === null) {
+      this.cacheMsg = `${item.name} is already at its deepest.`;
+      return;
+    }
+    if (buyItem(this.meta, id)) {
+      this.cacheMsg = `${item.name}, level ${ownedLevel(this.meta, id)} — yours on every run now.`;
+      this.sound.ensure();
+      this.sound.cacheChime();
+    } else {
+      this.cacheMsg = `Not enough Marks for ${item.name} — it costs ${price} ✦. A good run leaves more behind.`;
     }
   }
 
@@ -418,10 +672,13 @@ class Game {
     ctx.fillStyle = 'rgba(232, 226, 208, 0.85)';
     ctx.font = '18px Georgia, serif';
     ctx.fillText('The lantern keeper may take one blessing before the next night.', W / 2, 184);
-    if (this.dawnBonus > 0) {
+    if (this.dawnBonus > 0 || this.bossBonus > 0) {
+      const parts = [];
+      if (this.dawnBonus > 0) parts.push(`Dawn bonus +${this.dawnBonus} — the light you kept became gold`);
+      if (this.bossBonus > 0) parts.push(`the golem’s hoard pays +${this.bossBonus}, and a rare blessing is offered`);
       ctx.fillStyle = '#ffd98a';
-      ctx.font = '700 17px Georgia, serif';
-      ctx.fillText(`Dawn bonus +${this.dawnBonus} — the light you kept became gold`, W / 2, 210);
+      ctx.font = '700 16.5px Georgia, serif';
+      ctx.fillText(parts.join(' · '), W / 2, 210);
     }
 
     const cardW = 330, cardH = 190, gap = 36;
@@ -432,12 +689,18 @@ class Game {
     for (const card of this.choiceCards) {
       const opt = this.options[card.idx];
       ctx.fillStyle = 'rgba(20, 27, 52, 0.95)';
-      ctx.strokeStyle = 'rgba(255, 202, 106, 0.65)';
-      ctx.lineWidth = 2;
+      // A rare blessing (the golem's guarantee) wears a violet-gold edge.
+      ctx.strokeStyle = opt.rare ? 'rgba(216, 180, 255, 0.95)' : 'rgba(255, 202, 106, 0.65)';
+      ctx.lineWidth = opt.rare ? 3 : 2;
       ctx.beginPath();
       ctx.roundRect(card.x, card.y, card.w, card.h, 12);
       ctx.fill();
       ctx.stroke();
+      if (opt.rare) {
+        ctx.fillStyle = '#d8b4ff';
+        ctx.font = '700 13px Georgia, serif';
+        ctx.fillText('✦ RARE ✦', card.x + card.w / 2, card.y + 24);
+      }
       ctx.fillStyle = '#ffca6a';
       ctx.font = '40px Georgia, serif';
       ctx.fillText(opt.icon, card.x + card.w / 2, card.y + 58);
@@ -453,7 +716,7 @@ class Game {
     }
   }
 
-  wrapText(text, cx, y, maxWidth, lineHeight) {
+  wrapText(text, cx, y, maxWidth, lineHeight, align = 'center') {
     const words = text.split(' ');
     const lines = [];
     let line = '';
@@ -465,7 +728,10 @@ class Game {
       } else line = trial;
     }
     if (line) lines.push(line);
+    const prevAlign = this.ctx.textAlign;
+    this.ctx.textAlign = align;
     lines.forEach((l, i) => this.ctx.fillText(l, cx, y + i * lineHeight));
+    this.ctx.textAlign = prevAlign;
   }
 
   drawGameOver() {
@@ -482,20 +748,26 @@ class Game {
     ctx.fillStyle = 'rgba(232, 226, 208, 0.85)';
     ctx.font = '19px Georgia, serif';
     ctx.fillText(`Best ${this.best}`, W / 2, 300);
-    ctx.fillText(`Nights completed: ${this.night - 1} · fell on Night ${this.night}`, W / 2, 330);
+    ctx.fillText(`Nights survived: ${this.night - 1} · fell on Night ${this.night}`, W / 2, 330);
     ctx.font = '16px Georgia, serif';
     ctx.fillStyle = 'rgba(232, 226, 208, 0.75)';
     ctx.fillText(
-      `Embers caught ${this.stats.embers} · wisps kindled ${this.stats.wisps} · ash swallowed ${this.stats.ash}`,
+      `Embers caught ${this.stats.embers} · best streak ${this.stats.bestStreak} · wisps kindled ${this.stats.wisps}`,
       W / 2, 358);
+    const line2 = [`Ash swallowed ${this.stats.ash}`, `moonwater sipped ${this.stats.moon}`];
+    if (this.stats.stomps > 0) line2.push(`golem stomps ${this.stats.stomps}`, `embers it ate ${this.stats.swallowed}`);
+    ctx.fillText(line2.join(' · '), W / 2, 382);
+    ctx.fillStyle = '#ffd98a';
+    ctx.font = '700 18px Georgia, serif';
+    ctx.fillText(`✦ Keeper’s Marks +${this.marksEarned} — purse now ${this.meta.marks} ✦`, W / 2, 412);
     if (this.taken.length) {
       ctx.font = '15px Georgia, serif';
       ctx.fillStyle = 'rgba(255, 217, 138, 0.7)';
-      ctx.fillText(`Blessings taken: ${this.taken.length}`, W / 2, 384);
+      ctx.fillText(`Blessings taken: ${this.taken.length}`, W / 2, 438);
     }
     ctx.fillStyle = '#ffd98a';
     ctx.font = '700 20px Georgia, serif';
-    ctx.fillText('Press Enter or click to light it again', W / 2, 428);
+    ctx.fillText('Press Enter or click to light it again', W / 2, 472);
   }
 
   // ---- the loop -----------------------------------------------------------
@@ -541,10 +813,27 @@ canvas.addEventListener('mousemove', (evt) => {
 
 canvas.addEventListener('click', (evt) => {
   game.sound.ensure();
-  if (game.screen === 'title' || game.screen === 'gameover') {
+  const p = canvasPos(evt);
+  const inRect = (r) => r && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+  // The mute corner answers before anything else, on every screen.
+  if (inRect(game.muteRect)) {
+    game.sound.setMuted(!game.sound.muted);
+    return;
+  }
+  if (game.screen === 'title') {
+    if (inRect(game.cacheLinkRect)) {
+      game.cacheMsg = '';
+      game.setScreen('cache');
+    } else {
+      game.startRun();
+    }
+  } else if (game.screen === 'gameover') {
     game.startRun();
+  } else if (game.screen === 'cache') {
+    const row = game.cacheRows.find((r) => inRect(r));
+    if (row) game.buyFromCache(row.id);
+    else if (inRect(game.cacheBackRect)) game.setScreen('title');
   } else if (game.screen === 'choice') {
-    const p = canvasPos(evt);
     const card = game.choiceCards.find(c => p.x >= c.x && p.x <= c.x + c.w && p.y >= c.y && p.y <= c.y + c.h);
     if (card) game.chooseOption(card.idx);
   }
@@ -563,6 +852,15 @@ window.addEventListener('keydown', (evt) => {
   } else if (key === 'm' || key === 'M') {
     game.sound.ensure();
     game.sound.setMuted(!game.sound.muted);
+  } else if ((key === 'c' || key === 'C') && game.screen === 'title') {
+    game.cacheMsg = '';
+    game.setScreen('cache');
+  } else if (game.screen === 'cache') {
+    if (key === 'Escape') game.setScreen('title');
+    else if (key === '1' || key === '2' || key === '3') {
+      const item = CACHE_ITEMS[Number(key) - 1];
+      if (item) game.buyFromCache(item.id);
+    }
   } else if ((key === '1' || key === '2') && game.screen === 'choice') {
     game.chooseOption(Number(key) - 1);
   }

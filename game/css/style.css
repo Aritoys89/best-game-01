@@ -44,6 +44,7 @@ canvas#game {
 /* The frame breathes with the game: warm while playing, cold at the end. */
 body[data-screen="playing"] canvas#game { border-color: rgba(255, 184, 77, 0.55); }
 body[data-screen="choice"]  canvas#game { cursor: pointer; }
+body[data-screen="cache"]   canvas#game { cursor: pointer; }
 body[data-screen="gameover"] canvas#game {
   border-color: rgba(120, 140, 190, 0.4);
   box-shadow: 0 0 30px rgba(80, 110, 200, 0.10), 0 18px 50px rgba(0, 0, 0, 0.6);

@@ -20,10 +20,28 @@ one hit the ground breaks it.
 Play runs in "nights" of about forty seconds. Each night falls faster and
 throws more ash. Survive one and the game offers a choice of two blessings —
 a wider lantern, a slower drain, an ember magnet, an ash shield, a brighter
-core — which stack for the rest of the run.
+core — which stack for the rest of the run. Every night has a name, shown as
+it begins. Storm wisps dart through the fall: caught, they kindle the flame
+so embers feed it far more; burst beside you, they zap it. Once a night a
+gale shoves the whole sky sideways, and leftover light at dawn converts to
+score. Rare moonwater droplets pour +22 light back into the lantern — but
+spend the streak they land on.
+
+Every fifth night the **Ash Golem** crosses the valley: a slow silhouette
+that swallows the embers falling into it, drains extra light from a keeper
+standing in its shadow, and stomps every few seconds, shaking bonus embers
+loose. Survive its night and the dawn pays +150 and guarantees a rare
+blessing among the two offered.
+
+Runs also earn **Keeper's Marks** (1 per 150 points, plus 1 per night
+survived), kept in localStorage and spent at the title screen in the
+**Keeper's Cache** (press C): Deep Wick (more starting light), Wide Hands
+(a wider basket) and the Ward Charm (a shield that renews) — three levels
+each, prices climbing, permanent on every run.
 
 **Controls:** mouse, or ← → / A D to move · Enter or click to start ·
-1 / 2 (or click) to choose a blessing · P pauses · M mutes. The best score
+1 / 2 (or click) to choose a blessing · C opens the Cache at the title ·
+P pauses · M mutes (a sound indicator sits in the corner). The best score
 is kept in localStorage.
 
 ## Run it

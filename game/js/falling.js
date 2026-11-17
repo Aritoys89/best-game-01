@@ -1,13 +1,14 @@
 // falling.js — everything that falls out of the night sky: golden embers
 // (catch for points and light), dark ash lumps (catch and the flame
-// suffers), pale frost shards (catch to slow the fall of time itself) and
-// storm wisps — rare violet orbs that dart sideways as they fall. A wisp
-// caught kindles the flame (see main.js); a wisp that strikes the ridge
-// near the keeper bursts in a zap. This module owns spawning, motion,
-// magnet drift and collision tests; the game in main.js decides what a
-// catch or a miss means.
+// suffers), pale frost shards (catch to slow the fall of time itself),
+// storm wisps — rare violet orbs that dart sideways as they fall — and
+// moonwater, a rare blue droplet that pours light back into the lantern
+// at the price of the streak. A wisp caught kindles the flame (see
+// main.js); a wisp that strikes the ridge near the keeper bursts in a
+// zap. This module owns spawning, motion, magnet drift and collision
+// tests; the game in main.js decides what a catch or a miss means.
 
-export const KIND = { EMBER: 'ember', ASH: 'ash', FROST: 'frost', WISP: 'wisp' };
+export const KIND = { EMBER: 'ember', ASH: 'ash', FROST: 'frost', WISP: 'wisp', MOON: 'moon' };
 
 export class FallingField {
   constructor(width, height) {
@@ -32,6 +33,8 @@ export class FallingField {
       ashChance: Math.min(0.30, 0.13 + (night - 1) * 0.03),
       frostChance: 0.055,
       wispChance: Math.min(0.075, 0.038 + (night - 1) * 0.007),
+      // Moonwater seeps in from the second night on — a rare mercy.
+      moonChance: night >= 2 ? 0.028 : 0,
     };
   }
 
@@ -42,7 +45,9 @@ export class FallingField {
     if (roll < p.ashChance) kind = KIND.ASH;
     else if (roll < p.ashChance + p.frostChance) kind = KIND.FROST;
     else if (roll < p.ashChance + p.frostChance + p.wispChance) kind = KIND.WISP;
-    const speed = p.fall * (0.82 + Math.random() * 0.45) * (kind === KIND.WISP ? 1.18 : 1);
+    else if (roll < p.ashChance + p.frostChance + p.wispChance + p.moonChance) kind = KIND.MOON;
+    const speed = p.fall * (0.82 + Math.random() * 0.45) *
+      (kind === KIND.WISP ? 1.18 : kind === KIND.MOON ? 0.8 : 1);
     this.items.push({
       kind,
       x: 24 + Math.random() * (this.W - 48),
@@ -58,6 +63,31 @@ export class FallingField {
       r: kind === KIND.ASH ? 11 : kind === KIND.WISP ? 10 : kind === KIND.FROST ? 9 : 8,
       spin: Math.random() * Math.PI * 2,
     });
+  }
+
+  // A burst of bonus embers shaken loose by the Ash Golem's stomp. They
+  // burst outward from its feet along the ridge — wider and flatter than
+  // the lantern's fountain — and, like fountain embers, they are a gift:
+  // catchable at once, and a miss never breaks a combo.
+  spawnStompBurst(x) {
+    const groundY = this.H - 46;
+    for (const vx of [-150, -70, 70, 150]) {
+      this.items.push({
+        kind: KIND.EMBER,
+        x: x + Math.sign(vx) * 18,
+        y: groundY,
+        vy: -(195 + Math.random() * 85),
+        vx: vx * (0.85 + Math.random() * 0.3),
+        grav: 305,
+        noCatchT: 0.45,
+        bonus: true,
+        dartT: 0,
+        sway: Math.random() * Math.PI * 2,
+        swaySpeed: 1 + Math.random(),
+        r: 8,
+        spin: Math.random() * Math.PI * 2,
+      });
+    }
   }
 
   // A fountain of bonus embers from the lantern itself — the reward for a
@@ -85,10 +115,12 @@ export class FallingField {
   }
 
   // Advance the field. `hooks` receives onCatch(item), onMissEmber(item),
-  // onGround(item) and onWispGround(item) so the rules live in one place
-  // (main.js). `opts.wind` is the gale's sideways push in px/s and
-  // `opts.spawnBoost` thickens the spawn rate while the gale blows. The
-  // caller has already applied the frost time scale to dt.
+  // onGround(item), onWispGround(item) and onAbsorb(item) so the rules
+  // live in one place (main.js). `opts.wind` is the gale's sideways push
+  // in px/s, `opts.spawnBoost` thickens the spawn rate while the gale
+  // blows, and `opts.golem`, when the Ash Golem is crossing, swallows
+  // embers that fall into its body. The caller has already applied the
+  // frost time scale to dt.
   update(dt, night, keeper, magnetRadius, hooks, opts = {}) {
     const scaled = dt;
     const wind = opts.wind || 0;
@@ -139,6 +171,13 @@ export class FallingField {
         }
       }
 
+      // Swallowed by the Ash Golem: an ember that falls into the bulk is
+      // simply gone — no catch, no combo break, only a puff of ash.
+      if (opts.golem && opts.golem.absorbs(it)) {
+        if (hooks.onAbsorb) hooks.onAbsorb(it);
+        continue;
+      }
+
       // Caught? The item reaches the basket rim inside its span.
       if (it.noCatchT <= 0 &&
           it.y >= keeper.catchY - 4 && it.y <= keeper.catchY + 16 &&
@@ -163,6 +202,7 @@ export class FallingField {
       if (it.kind === KIND.EMBER) this.drawEmber(ctx, it);
       else if (it.kind === KIND.ASH) this.drawAsh(ctx, it);
       else if (it.kind === KIND.WISP) this.drawWisp(ctx, it);
+      else if (it.kind === KIND.MOON) this.drawMoon(ctx, it);
       else this.drawFrost(ctx, it);
     }
   }
@@ -240,6 +280,40 @@ export class FallingField {
     ctx.beginPath();
     ctx.arc(it.x, it.y, 3.6 * pulse, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  drawMoon(ctx, it) {
+    // Moonwater: a single blue droplet, plump below and pointed above,
+    // with a moonlit sheen — the one cold, kind thing in the fall.
+    const pulse = 1 + Math.sin(it.sway * 3) * 0.07;
+    const g = ctx.createRadialGradient(it.x, it.y, 0, it.x, it.y, 21 * pulse);
+    g.addColorStop(0, 'rgba(190, 225, 255, 0.55)');
+    g.addColorStop(0.5, 'rgba(90, 160, 255, 0.30)');
+    g.addColorStop(1, 'rgba(60, 120, 255, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(it.x, it.y, 21 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.save();
+    ctx.translate(it.x, it.y);
+    ctx.scale(pulse, pulse);
+    const drop = ctx.createLinearGradient(0, -13, 0, 10);
+    drop.addColorStop(0, '#bcd9ff');
+    drop.addColorStop(0.55, '#5e9bf0');
+    drop.addColorStop(1, '#2f6fd0');
+    ctx.fillStyle = drop;
+    ctx.beginPath(); // teardrop: pointed tip up, round belly below
+    ctx.moveTo(0, -13);
+    ctx.quadraticCurveTo(8.5, -1, 8.5, 3.5);
+    ctx.quadraticCurveTo(8.5, 10.5, 0, 10.5);
+    ctx.quadraticCurveTo(-8.5, 10.5, -8.5, 3.5);
+    ctx.quadraticCurveTo(-8.5, -1, 0, -13);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.beginPath(); // the sheen
+    ctx.ellipse(-3, 1, 2.1, 3.6, 0.35, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   drawFrost(ctx, it) {

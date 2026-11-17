@@ -170,6 +170,46 @@ export class SoundEngine {
     this.tone(784, 0.9, { type: 'sine', vol: 0.08, delay: 0.18 });
   }
 
+  // The Ash Golem announcing itself: a groan that slides down out of the
+  // dark, with a breath of ash-noise under it.
+  golemGroan() {
+    this.tone(96, 1.5, { type: 'triangle', vol: 0.22, slideTo: 52 });
+    this.tone(64, 1.5, { type: 'sine', vol: 0.2, slideTo: 40, delay: 0.08 });
+  }
+
+  // The golem's stomp: a deep thud felt more than heard, plus grit.
+  golemStomp() {
+    this.tone(68, 0.42, { type: 'sine', vol: 0.55, slideTo: 28 });
+    if (!this.ctx || this.muted) return;
+    const dur = 0.22;
+    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 240;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.3;
+    src.connect(filter).connect(gain).connect(this.master);
+    src.start();
+  }
+
+  // Catching moonwater: a droplet blip that bends down, then a deep,
+  // satisfied glug as the lantern drinks.
+  moonSip() {
+    this.tone(880, 0.16, { type: 'sine', vol: 0.14, slideTo: 520 });
+    this.tone(196, 0.4, { type: 'sine', vol: 0.2, slideTo: 130, delay: 0.09 });
+    this.tone(262, 0.35, { type: 'triangle', vol: 0.08, delay: 0.16 });
+  }
+
+  // Buying from the Keeper's Cache: a small bright coin-chime.
+  cacheChime() {
+    this.tone(1318, 0.3, { type: 'triangle', vol: 0.14 });
+    this.tone(1760, 0.42, { type: 'sine', vol: 0.1, delay: 0.07 });
+  }
+
   // Looping night air: slow filtered wind noise, faint ember crackle, and a
   // very quiet pad that cycles through a four-chord motif. Started once.
   startAmbience() {

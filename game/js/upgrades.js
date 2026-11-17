@@ -45,8 +45,9 @@ export const UPGRADES = [
   {
     id: 'stormglass',
     name: 'Stormglass Charm',
-    desc: 'A violet charm: wisps kindle the flame far longer, and a burst wisp feeds it +5 light instead of zapping.',
+    desc: 'Wisps kindle the flame far longer, and a burst wisp feeds it +5 light instead of zapping.',
     icon: '✧',
+    rare: true,
     apply(game) {
       game.kindledFactor = 1.8;
       game.wispWard = true;
@@ -57,6 +58,7 @@ export const UPGRADES = [
     name: 'Dawn Tithe',
     desc: 'The dawn pays double: light left at night’s end is worth twice the score.',
     icon: '☼',
+    rare: true,
     apply(game) { game.dawnFactor = 2; },
   },
 ];
@@ -67,6 +69,17 @@ export function pickTwo() {
   const first = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
   const second = pool[Math.floor(Math.random() * pool.length)];
   return [first, second];
+}
+
+// The dawn after a boss night: the golem's hoard guarantees one rare
+// blessing among the two offered. The rare comes first so the choice
+// screen can dress its card differently.
+export function pickBossPair() {
+  const rares = UPGRADES.filter((u) => u.rare);
+  const rest = UPGRADES.filter((u) => !u.rare);
+  const rare = rares[Math.floor(Math.random() * rares.length)];
+  const other = rest[Math.floor(Math.random() * rest.length)];
+  return [rare, other];
 }
 
 export function applyUpgrade(game, upgrade) {
